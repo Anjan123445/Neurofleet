@@ -11,6 +11,7 @@ import {
   Chip
 } from "@mui/material";
 import { useState, useEffect } from "react";
+import { supabase } from "../supabaseClient";
 import {
   MapContainer,
   TileLayer,
@@ -22,21 +23,18 @@ import {
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-/* ---------------- FIX MARKERS ---------------- */
+/* -------- Fix Leaflet Icons -------- */
 delete L.Icon.Default.prototype._getIconUrl;
-
 L.Icon.Default.mergeOptions({
   iconRetinaUrl:
     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
   iconUrl:
     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   shadowUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41]
+    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png"
 });
 
-/* ---------------- RESIZE FIX ---------------- */
+/* -------- Resize Fix -------- */
 const ResizeMap = () => {
   const map = useMap();
   useEffect(() => {
@@ -45,7 +43,7 @@ const ResizeMap = () => {
   return null;
 };
 
-/* ---------------- MAP CLICK ---------------- */
+/* -------- Map Click -------- */
 const LocationSelector = ({ pickup, drop, setPickup, setDrop }) => {
   useMapEvents({
     click(e) {
@@ -57,111 +55,90 @@ const LocationSelector = ({ pickup, drop, setPickup, setDrop }) => {
 };
 
 const CustomerDashboard = () => {
-  const vehicles = [
-    { id: 1, name: "Toyota Innova", type: "SUV" },
-    { id: 2, name: "Honda City", type: "Sedan" }
-  ];
-
+  const [vehicles, setVehicles] = useState([]);
   const [selectedVehicle, setSelectedVehicle] = useState(null);
   const [pickup, setPickup] = useState(null);
   const [drop, setDrop] = useState(null);
-  const [routes, setRoutes] = useState([]);
-  const [selectedRouteIndex, setSelectedRouteIndex] = useState(null);
-  const [driverPosition, setDriverPosition] = useState(null);
-  const [fare, setFare] = useState(null);
+  const [driverLocation, setDriverLocation] = useState(null);
+  const [currentTrip, setCurrentTrip] = useState(null);
 
-  /* ---------------- FETCH ROUTE ---------------- */
-  const fetchRoute = async (start, end) => {
-    const res = await fetch(
-      `https://router.project-osrm.org/route/v1/driving/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson`
-    );
-    const data = await res.json();
-    return {
-      coords: data.routes[0].geometry.coordinates.map(
-        (c) => [c[1], c[0]]
-      ),
-      distance: data.routes[0].distance,
-      duration: data.routes[0].duration
+  /* -------- Load Vehicles -------- */
+  useEffect(() => {
+    const loadVehicles = async () => {
+      const { data } = await supabase
+        .from("vehicles")
+        .select("*")
+        .eq("status", "available");
+
+      setVehicles(data || []);
     };
-  };
 
-  /* ---------------- GENERATE ROUTES ---------------- */
+    loadVehicles();
+  }, []);
+
+  /* -------- Subscribe to Driver Location -------- */
   useEffect(() => {
-    if (pickup && drop) {
-      fetchRoute(pickup, drop).then((base) => {
-        const trafficMultiplier = 1.3;
-        const ecoMultiplier = 0.9;
+    const channel = supabase
+      .channel("driver_location")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "driver_locations"
+        },
+        (payload) => {
+          setDriverLocation(payload.new);
+        }
+      )
+      .subscribe();
 
-        setRoutes([
-          {
-            type: "Fastest",
-            color: "#f97316",
-            eta: base.duration,
-            distance: base.distance,
-            coords: base.coords
-          },
-          {
-            type: "Traffic",
-            color: "#3b82f6",
-            eta: base.duration * trafficMultiplier,
-            distance: base.distance,
-            coords: base.coords
-          },
-          {
-            type: "Eco",
-            color: "#22c55e",
-            eta: base.duration * ecoMultiplier,
-            distance: base.distance,
-            coords: base.coords
-          }
-        ]);
+    return () => supabase.removeChannel(channel);
+  }, []);
 
-        setSelectedRouteIndex(0);
-      });
+  /* -------- Book Ride -------- */
+  const bookRide = async () => {
+    if (!(selectedVehicle && pickup && drop)) return;
+
+    const user = (await supabase.auth.getUser()).data.user;
+
+    const { data, error } = await supabase
+      .from("trips")
+      .insert([
+        {
+          customer_id: user.id,
+          pickup_lat: pickup[0],
+          pickup_lng: pickup[1],
+          drop_lat: drop[0],
+          drop_lng: drop[1],
+          status: "requested"
+        }
+      ])
+      .select()
+      .single();
+
+    if (error) {
+      console.error(error);
+      return;
     }
-  }, [pickup, drop]);
 
-  /* ---------------- LIVE DRIVER SIMULATION ---------------- */
-  useEffect(() => {
-    if (selectedRouteIndex === null) return;
-    const selected = routes[selectedRouteIndex];
-    if (!selected) return;
+    await supabase.rpc("auto_assign_driver", {
+      trip_id: data.id
+    });
 
-    let i = 0;
-    setDriverPosition(selected.coords[0]);
-
-    const interval = setInterval(() => {
-      if (i < selected.coords.length - 1) {
-        i++;
-        setDriverPosition(selected.coords[i]);
-      } else clearInterval(interval);
-    }, 100);
-
-    return () => clearInterval(interval);
-  }, [selectedRouteIndex, routes]);
-
-  /* ---------------- FARE CALCULATION ---------------- */
-  useEffect(() => {
-    if (selectedRouteIndex === null) return;
-    const route = routes[selectedRouteIndex];
-    if (!route) return;
-
-    const baseFare = 50;
-    const perKm = 12;
-    const km = route.distance / 1000;
-    setFare((baseFare + km * perKm).toFixed(0));
-  }, [selectedRouteIndex, routes]);
+    setCurrentTrip(data);
+  };
 
   return (
     <Box>
       <Typography variant="h4" gutterBottom>
-        Intelligent Route Planner
+        Customer Dashboard
       </Typography>
 
       <Grid container spacing={3}>
         <Grid item xs={4}>
           <Paper sx={{ p: 3 }}>
-            <Typography variant="h6">Vehicles</Typography>
+            <Typography variant="h6">Available Vehicles</Typography>
             <List>
               {vehicles.map((v) => (
                 <ListItemButton
@@ -181,16 +158,10 @@ const CustomerDashboard = () => {
 
         <Grid item xs={8}>
           <Paper sx={{ p: 3 }}>
-            <Box
-              sx={{
-                height: 400,
-                borderRadius: 2,
-                overflow: "hidden"
-              }}
-            >
+            <Box sx={{ height: 250,width:600 ,borderRadius: 6, overflow: "hidden" }}>
               <MapContainer
                 center={[12.9716, 77.5946]}
-                zoom={8}
+                zoom={12}
                 style={{ height: "100%", width: "100%" }}
               >
                 <ResizeMap />
@@ -210,62 +181,26 @@ const CustomerDashboard = () => {
                 {pickup && <Marker position={pickup} />}
                 {drop && <Marker position={drop} />}
 
-                {routes.map((route, index) => (
-                  <Polyline
-                    key={index}
-                    positions={route.coords}
-                    color={
-                      index === selectedRouteIndex
-                        ? route.color
-                        : "#555"
-                    }
-                    weight={
-                      index === selectedRouteIndex
-                        ? 6
-                        : 3
-                    }
+                {driverLocation && (
+                  <Marker
+                    position={[
+                      driverLocation.lat,
+                      driverLocation.lng
+                    ]}
                   />
-                ))}
-
-                {driverPosition && (
-                  <Marker position={driverPosition} />
                 )}
               </MapContainer>
             </Box>
 
-            {/* ROUTE CARDS */}
-            <Grid container spacing={2} mt={2}>
-              {routes.map((route, index) => (
-                <Grid item xs={4} key={index}>
-                  <Paper
-                    sx={{
-                      p: 2,
-                      cursor: "pointer",
-                      border:
-                        index === selectedRouteIndex
-                          ? "2px solid #f97316"
-                          : "1px solid #333"
-                    }}
-                    onClick={() =>
-                      setSelectedRouteIndex(index)
-                    }
-                  >
-                    <Typography fontWeight={600}>
-                      {route.type}
-                    </Typography>
-                    <Typography>
-                      ETA: {(route.eta / 60).toFixed(1)} min
-                    </Typography>
-                  </Paper>
-                </Grid>
-              ))}
-            </Grid>
+            <Divider sx={{ my: 2 }} />
 
-            {fare && (
-              <Typography mt={2} variant="h6">
-                Estimated Fare: ₹{fare}
-              </Typography>
-            )}
+            <Button
+              variant="contained"
+              onClick={bookRide}
+              disabled={!(selectedVehicle && pickup && drop)}
+            >
+              Book Ride
+            </Button>
           </Paper>
         </Grid>
       </Grid>

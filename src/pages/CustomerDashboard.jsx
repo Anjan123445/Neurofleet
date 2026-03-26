@@ -23,6 +23,7 @@ import {
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
+
 /* -------- Fix Leaflet Icons -------- */
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({

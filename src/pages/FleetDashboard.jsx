@@ -2,315 +2,336 @@ import {
   Box,
   Typography,
   Paper,
-  Grid,
-  Chip,
-  LinearProgress,
-  Button,
   TextField,
-  MenuItem
+  Button,
+  Grid,
+  MenuItem,
+  List,
+  ListItem,
+  ListItemText,
+  Chip
 } from "@mui/material";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "../supabaseClient";
 
 const FleetDashboard = () => {
-  const [vehicles, setVehicles] = useState([
-    {
-      id: 1,
-      name: "Toyota Innova",
-      plate: "KA-01-AB-1234",
-      type: "SUV",
-      status: "Available",
-      driver: "Ravi Kumar",
-      fuel: 78,
-      mileage: "18 km/l",
-      lastService: "12 Feb 2026",
-      location: "Bangalore",
-      engineTemp: 72,
-      speed: 0
-    }
-  ]);
+  const [vehicles, setVehicles] = useState([]);
+  const [drivers, setDrivers] = useState([]);
 
-  const [newVehicle, setNewVehicle] = useState({
+  /* -------- Driver Form -------- */
+  const [driverEmail, setDriverEmail] = useState("");
+  const [driverPassword, setDriverPassword] = useState("");
+  const [driverName, setDriverName] = useState("");
+
+  /* -------- Vehicle Form -------- */
+  const [form, setForm] = useState({
     name: "",
-    plate: "",
     type: "",
-    driver: ""
+    number_plate: "",
+    capacity: "",
+    driver_id: ""
   });
 
-  const statusColor = (status) => {
-    if (status === "Available") return "success";
-    if (status === "Booked") return "warning";
-    if (status === "Maintenance") return "error";
-    return "default";
+  /* ---------------- LOAD VEHICLES ---------------- */
+  const loadVehicles = async () => {
+    const { data } = await supabase
+      .from("vehicles")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    setVehicles(data || []);
   };
 
-  const addVehicle = () => {
-    if (!newVehicle.name || !newVehicle.plate) return;
+  /* ---------------- LOAD DRIVERS ---------------- */
+  const loadDrivers = async () => {
+    const { data } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("role", "driver");
 
-    const vehicle = {
-      id: Date.now(),
-      ...newVehicle,
-      status: "Available",
-      fuel: 100,
-      mileage: "20 km/l",
-      lastService: new Date().toLocaleDateString(),
-      location: "Bangalore",
-      engineTemp: 60,
-      speed: 0
-    };
+    setDrivers(data || []);
+  };
 
-    setVehicles([...vehicles, vehicle]);
-    setNewVehicle({
+  /* ---------------- INITIAL LOAD ---------------- */
+  useEffect(() => {
+    loadVehicles();
+    loadDrivers();
+  }, []);
+
+  /* ---------------- REALTIME SYNC ---------------- */
+  useEffect(() => {
+    const channel = supabase
+      .channel("vehicles_realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "vehicles"
+        },
+        () => {
+          loadVehicles();
+        }
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, []);
+
+  /* ---------------- CREATE DRIVER ---------------- */
+  const createDriver = async () => {
+    if (!driverEmail || !driverName || !driverPassword) {
+      alert("Enter all driver details");
+      return;
+    }
+
+    const { data, error } = await supabase.auth.signUp({
+      email: driverEmail,
+      name: driverName,
+      password: driverPassword
+    });
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
+    // Assign role
+    await supabase
+      .from("profiles")
+      .update({ role: "driver" })
+      .eq("id", data.user.id);
+
+    alert("Driver created successfully!");
+
+    setDriverEmail("");
+    setDriverName("");
+    setDriverPassword("");
+
+    loadDrivers();
+  };
+
+  /* ---------------- ADD VEHICLE ---------------- */
+  const addVehicle = async () => {
+    if (
+      !form.name ||
+      !form.number_plate ||
+      !form.driver_id
+    ) {
+      alert("Fill all required fields");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("vehicles")
+      .insert([
+        {
+          ...form,
+          status: "available",
+          fuel: 100,
+          location_lat: 12.9716,
+          location_lng: 77.5946
+        }
+      ]);
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
+    setForm({
       name: "",
-      plate: "",
       type: "",
-      driver: ""
+      number_plate: "",
+      capacity: "",
+      driver_id: ""
     });
   };
 
-  const updateStatus = (id, status) => {
-    setVehicles(
-      vehicles.map((v) =>
-        v.id === id ? { ...v, status } : v
-      )
-    );
-  };
-
-  const deleteVehicle = (id) => {
-    setVehicles(vehicles.filter((v) => v.id !== id));
+  /* ---------------- STATUS COLOR ---------------- */
+  const statusColor = (status) => {
+    if (status === "available") return "success";
+    if (status === "booked") return "warning";
+    if (status === "maintenance") return "error";
+    return "default";
   };
 
   return (
-    <Box>
+    <Box p={4}>
       <Typography variant="h4" gutterBottom>
-        Fleet Dashboard
+        Fleet Manager Dashboard
       </Typography>
 
-      {/* ===== STATS ===== */}
-      <Grid container spacing={3} mb={4}>
-        <Grid item xs={4}>
-          <Paper sx={{ p: 3 }}>
-            <Typography color="text.secondary">
-              Total Vehicles
-            </Typography>
-            <Typography variant="h4">
-              {vehicles.length}
-            </Typography>
-          </Paper>
-        </Grid>
+      {/* ---------------- CREATE DRIVER ---------------- */}
 
-        <Grid item xs={4}>
-          <Paper sx={{ p: 3 }}>
-            <Typography color="text.secondary">
-              Available
-            </Typography>
-            <Typography variant="h4">
-              {
-                vehicles.filter(
-                  (v) => v.status === "Available"
-                ).length
-              }
-            </Typography>
-          </Paper>
-        </Grid>
-
-        <Grid item xs={4}>
-          <Paper sx={{ p: 3 }}>
-            <Typography color="text.secondary">
-              Maintenance
-            </Typography>
-            <Typography variant="h4">
-              {
-                vehicles.filter(
-                  (v) =>
-                    v.status === "Maintenance"
-                ).length
-              }
-            </Typography>
-          </Paper>
-        </Grid>
-      </Grid>
-
-      {/* ===== ADD VEHICLE FORM ===== */}
       <Paper sx={{ p: 3, mb: 4 }}>
-        <Typography variant="h6" mb={2}>
-          Add New Vehicle
+        <Typography variant="h6" gutterBottom>
+          Create Driver
         </Typography>
 
         <Grid container spacing={2}>
-          <Grid item xs={3}>
+          <Grid item xs={5}>
             <TextField
+              label="Driver Email"
               fullWidth
-              label="Vehicle Name"
-              value={newVehicle.name}
+              value={driverEmail}
               onChange={(e) =>
-                setNewVehicle({
-                  ...newVehicle,
-                  name: e.target.value
-                })
+                setDriverEmail(e.target.value)
               }
             />
           </Grid>
+ <Grid item xs={5}>
+            <TextField
+              label="Name"
+              type="text"
+              fullWidth
+              value={driverName}
+              onChange={(e) =>
+                setDriverName(e.target.value)
+              }
+            />
 
-          <Grid item xs={3}>
+</Grid>
+          <Grid item xs={5}>
             <TextField
+              label="Password"
+              type="password"
               fullWidth
-              label="License Plate"
-              value={newVehicle.plate}
+              value={driverPassword}
               onChange={(e) =>
-                setNewVehicle({
-                  ...newVehicle,
-                  plate: e.target.value
-                })
+                setDriverPassword(e.target.value)
               }
             />
           </Grid>
-
-          <Grid item xs={3}>
-            <TextField
-              fullWidth
-              label="Vehicle Type"
-              value={newVehicle.type}
-              onChange={(e) =>
-                setNewVehicle({
-                  ...newVehicle,
-                  type: e.target.value
-                })
-              }
-            />
-          </Grid>
+          
+          
 
           <Grid item xs={2}>
-            <TextField
-              fullWidth
-              label="Driver Assigned"
-              value={newVehicle.driver}
-              onChange={(e) =>
-                setNewVehicle({
-                  ...newVehicle,
-                  driver: e.target.value
-                })
-              }
-            />
-          </Grid>
-
-          <Grid item xs={1}>
             <Button
               variant="contained"
               fullWidth
-              sx={{ height: "100%" }}
-              onClick={addVehicle}
+              onClick={createDriver}
             >
-              Add
+              Create
             </Button>
           </Grid>
         </Grid>
       </Paper>
 
-      {/* ===== VEHICLE CARDS ===== */}
-      <Grid container spacing={3}>
-        {vehicles.map((vehicle) => (
-          <Grid item xs={6} key={vehicle.id}>
-            <Paper
-              sx={{
-                p: 3,
-                transition: "0.3s",
-                "&:hover": {
-                  transform: "translateY(-4px)"
-                }
-              }}
-            >
-              <Box
-                display="flex"
-                justifyContent="space-between"
-              >
-                <Typography variant="h6">
-                  {vehicle.name}
-                </Typography>
+      {/* ---------------- ADD VEHICLE ---------------- */}
 
-                <Chip
-                  label={vehicle.status}
-                  color={statusColor(
-                    vehicle.status
-                  )}
-                />
-              </Box>
+      <Paper sx={{ p: 3, mb: 4 }}>
+        <Typography variant="h6" gutterBottom>
+          Add Vehicle
+        </Typography>
 
-              <Typography variant="body2">
-                Plate: {vehicle.plate}
-              </Typography>
-              <Typography variant="body2">
-                Driver: {vehicle.driver}
-              </Typography>
-              <Typography variant="body2">
-                Type: {vehicle.type}
-              </Typography>
-              <Typography variant="body2">
-                Location: {vehicle.location}
-              </Typography>
-              <Typography variant="body2">
-                Mileage: {vehicle.mileage}
-              </Typography>
-              <Typography variant="body2">
-                Last Service: {vehicle.lastService}
-              </Typography>
-              <Typography variant="body2">
-                Engine Temp: {vehicle.engineTemp}°C
-              </Typography>
-              <Typography variant="body2">
-                Speed: {vehicle.speed} km/h
-              </Typography>
-
-              <Box mt={2}>
-                <Typography variant="body2">
-                  Fuel Level
-                </Typography>
-                <LinearProgress
-                  variant="determinate"
-                  value={vehicle.fuel}
-                  sx={{ height: 8, borderRadius: 5 }}
-                />
-                <Typography variant="caption">
-                  {vehicle.fuel}%
-                </Typography>
-              </Box>
-
-              <Box mt={2} display="flex" gap={1}>
-                <TextField
-                  select
-                  size="small"
-                  label="Status"
-                  onChange={(e) =>
-                    updateStatus(
-                      vehicle.id,
-                      e.target.value
-                    )
-                  }
-                >
-                  <MenuItem value="Available">
-                    Available
-                  </MenuItem>
-                  <MenuItem value="Booked">
-                    Booked
-                  </MenuItem>
-                  <MenuItem value="Maintenance">
-                    Maintenance
-                  </MenuItem>
-                </TextField>
-
-                <Button
-                  color="error"
-                  variant="outlined"
-                  onClick={() =>
-                    deleteVehicle(vehicle.id)
-                  }
-                >
-                  Delete
-                </Button>
-              </Box>
-            </Paper>
+        <Grid container spacing={2}>
+          <Grid item xs={4}>
+            <TextField
+              label="Vehicle Name"
+              fullWidth
+              value={form.name}
+              onChange={(e) =>
+                setForm({ ...form, name: e.target.value })
+              }
+            />
           </Grid>
-        ))}
-      </Grid>
+
+          <Grid item xs={4}>
+            <TextField
+              label="Type"
+              fullWidth
+              value={form.type}
+              onChange={(e) =>
+                setForm({ ...form, type: e.target.value })
+              }
+            />
+          </Grid>
+
+          <Grid item xs={4}>
+            <TextField
+              label="Number Plate"
+              fullWidth
+              value={form.number_plate}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  number_plate: e.target.value
+                })
+              }
+            />
+          </Grid>
+
+          <Grid item xs={4}>
+            <TextField
+              label="Capacity"
+              fullWidth
+              value={form.capacity}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  capacity: e.target.value
+                })
+              }
+            />
+          </Grid>
+
+          <Grid item xs={4}>
+            <TextField
+              select
+              label="Assign Driver"
+              fullWidth
+              value={form.driverName}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  driver_id: e.target.value
+                })
+              }
+            >
+              {drivers.map((d) => (
+                <MenuItem key={d.id} value={d.id}>
+                  {d.id}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+
+          <Grid item xs={4}>
+            <Button
+              fullWidth
+              variant="contained"
+              sx={{ height: "100%" }}
+              onClick={addVehicle}
+            >
+              Add Vehicle
+            </Button>
+          </Grid>
+        </Grid>
+      </Paper>
+
+      {/* ---------------- VEHICLE LIST ---------------- */}
+
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h6" gutterBottom>
+          Fleet Vehicles
+        </Typography>
+
+        <List>
+          {vehicles.map((v) => (
+            <ListItem key={v.id}>
+              <ListItemText
+                primary={`${v.name} (${v.number_plate})`}
+                secondary={`Driver: ${v.driver_id}`}
+              />
+              <Chip
+                label={v.status}
+                color={statusColor(v.status)}
+              />
+            </ListItem>
+          ))}
+        </List>
+      </Paper>
     </Box>
   );
 };
